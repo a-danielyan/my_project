@@ -1,0 +1,309 @@
+include:
+- template: Security/SAST.gitlab-ci.yml
+- template: Code-Quality.gitlab-ci.yml
+
+image: edbizarro/gitlab-ci-pipeline-php:latest
+
+default:
+  # All jobs are interruptible by default
+  interruptible: true
+
+stages:
+  - dependencies
+  - test
+  - analyze
+  - build
+  - deploy
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"
+      variables:
+        ENV_SUFFIX: prod
+        ENVIRONMENT: production
+    - if: $CI_COMMIT_TAG
+      variables:
+        ENV_SUFFIX: prod
+        ENVIRONMENT: production
+    - if: $CI_COMMIT_BRANCH == "develop"
+      variables:
+        ENV_SUFFIX: dev
+        ENVIRONMENT: development
+    - if: $CI_COMMIT_BRANCH == "main"
+      variables:
+        ENV_SUFFIX: prod
+        ENVIRONMENT: production
+
+.default_rules:
+  top_branches:
+    - if: $CI_COMMIT_BRANCH == "develop"
+      when: on_success
+    - if: $CI_COMMIT_BRANCH == "main"
+      when: on_success
+    - if: $CI_COMMIT_TAG
+      when: on_success
+    - when: never
+  tests:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: on_success
+    - if: $CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE != "merge_request_event"
+      when: on_success
+    - if: $CI_COMMIT_BRANCH == "develop" && $CI_PIPELINE_SOURCE != "merge_request_event"
+      when: on_success
+    - when: never
+  phpcstests:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"
+      exists:
+        - '**/*.php'
+      when: on_success
+    - if: $CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE != "merge_request_event"
+      exists:
+        - '**/*.php'
+      when: on_success
+    - when: never
+  semgreptests:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"
+      exists:
+        - '**/*.py'
+        - '**/*.js'
+        - '**/*.jsx'
+        - '**/*.ts'
+        - '**/*.tsx'
+        - '**/*.c'
+        - '**/*.go'
+        - '**/*.java'
+        - '**/*.cs'
+        - '**/*.html'
+        - '**/*.scala'
+        - '**/*.sc'
+      when: on_success
+    - if: $CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE != "merge_request_event"
+      exists:
+        - '**/*.py'
+        - '**/*.js'
+        - '**/*.jsx'
+        - '**/*.ts'
+        - '**/*.tsx'
+        - '**/*.c'
+        - '**/*.go'
+        - '**/*.java'
+        - '**/*.cs'
+        - '**/*.html'
+        - '**/*.scala'
+        - '**/*.sc'
+      when: on_success
+    - when: never
+
+semgrep:
+  extends: semgrep-sast
+  variables:
+    SAST_EXCLUDED_PATHS: vendor
+  rules:
+    - !reference [.default_rules, semgreptests]
+  artifacts:
+    paths:
+      - gl-sast-report.json
+
+phpcs-security-audit:
+  extends: phpcs-security-audit-sast
+  variables:
+    SAST_EXCLUDED_PATHS: vendor
+  rules:
+    - !reference [.default_rules, phpcstests]
+  artifacts:
+    paths:
+      - gl-sast-report.json
+
+analyze-phpcs-security-audit:
+  stage: analyze
+  image: registry.gitlab.com/xhibitsignage-v3/xhibitsignage-v3-backend/alpine-jq:1.0
+  rules:
+    - !reference [.default_rules, phpcstests]
+  dependencies:
+    - phpcs-security-audit
+  variables:
+     GIT_STRATEGY: none
+  script:
+    - cat gl-sast-report.json | jq '.vulnerabilities[] | select (.severity|IN("High","Critical"))' > result.txt
+    - ls -la
+    - cat result.txt
+    - if [ -s "result.txt" ]; then exit 255; fi
+
+analyze-semgrep:
+  stage: analyze
+  image: registry.gitlab.com/xhibitsignage-v3/xhibitsignage-v3-backend/alpine-jq:1.0
+  rules:
+    - !reference [.default_rules, semgreptests]
+  dependencies:
+    - semgrep
+  variables:
+     GIT_STRATEGY: none
+  script:
+    - cat gl-sast-report.json | jq '.vulnerabilities[] | select (.severity|IN("High","Critical"))' > result.txt
+    - ls -la
+    - cat result.txt
+    - if [ -s "result.txt" ]; then exit 255; fi
+
+.update-helm-version-script: &update-helm-version-script |
+  CURRENT_VER=$(awk -F' ' '/version:/ {$2; print $2}' .k8s/mvix-crm-backend/Chart.yaml)
+  PATCH_VER=$(echo ${CURRENT_VER} | cut -d. -f3)
+  MINOR_VER=$(echo ${CURRENT_VER} | cut -d. -f2)
+  MAJOR_VER=$(echo ${CURRENT_VER} | cut -d. -f1)
+  # We are going to bump MINOR_VER and same time reset PATCH_VER to zero
+  MINOR_VER=$((MINOR_VER+1))
+  PATCH_VER=0
+  FULL_VER=${MAJOR_VER}.${MINOR_VER}.${PATCH_VER}
+  sed -i "s/^version:.*/version: $FULL_VER/g" .k8s/mvix-crm-backend/Chart.yaml
+  sed -i "s/^appVersion:.*/appVersion: $FULL_VER/g" .k8s/mvix-crm-backend/Chart.yaml
+  echo "Helm chart version: ${FULL_VER}"
+
+.git-tag-script: &git-tag-script |
+  cd $CI_PROJECT_DIR
+  echo "committing"
+  git config user.name "$GITLAB_USER_NAME"
+  git config user.email "$GITLAB_USER_EMAIL"
+  git add .k8s/mvix-crm-backend/Chart.yaml
+  git commit -m "CI/CD: Auto bump version and add a TAG."
+  git remote remove origin
+  git remote add origin "https://${GITLAB_USERNAME}:${GITLAB_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git"
+  git pull origin ${CI_COMMIT_REF_NAME}
+  git tag -a "mvix-crm-backend-$ENV_SUFFIX-v${FULL_VER}" -m "Helm chart: mvix-crm-backend, Version: ${FULL_VER}"
+  git push -o ci.skip --atomic --tags origin HEAD:${CI_COMMIT_REF_NAME}
+
+dependencies_php:
+  stage: dependencies
+  interruptible: true
+  image: registry.gitlab.com/xhibitsignage-v3/xhibitsignage-v3-backend:php-8.1.19-1
+  cache:
+    key:
+      files:
+      - composer.lock
+    paths:
+    - vendor/
+  artifacts:
+    untracked: false
+    paths:
+    - vendor/
+    - bootstrap/
+    - resources/
+  script:
+  - composer install --no-interaction --no-progress --prefer-dist --optimize-autoloader --ignore-platform-reqs
+  - php artisan vendor:publish --tag=laravel-mail
+  rules:
+    - !reference [.default_rules, tests]
+
+unit_tests_1:
+  image: registry.gitlab.com/xhibitsignage-v3/xhibitsignage-v3-backend:php-8.1.19-1
+  stage: test
+  interruptible: true
+  services:
+  - name: public.ecr.aws/docker/library/mysql:8.0.30
+    alias: mysql
+    command:
+    - mysqld
+    - "--default-authentication-plugin=mysql_native_password"
+  - name: public.ecr.aws/docker/library/redis:7.0.5
+    alias: redis
+  variables:
+    DB_USERNAME: root
+    DB_PASSWORD: secret
+    DB_HOST: 127.0.0.1
+    DB_HOST_RO: 127.0.0.1
+    DB_DATABASE: test
+    MYSQL_DATABASE: test
+    MYSQL_ROOT_PASSWORD: secret
+    REDIS_PORT: 6379
+  needs:
+  - job: dependencies_php
+    artifacts: true
+  script:
+  - cp .env.gitlabci .env
+  - cp .env.gitlabci .env.testing
+  - php artisan key:generate
+  - php artisan jwt:secret
+  - php artisan config:cache
+  - vendor/bin/phpcs
+  - timeout 1m sh -c 'until mysqladmin ping -h ${DB_HOST} -P 3306 -u ${DB_USERNAME} --password=${DB_PASSWORD} >> /dev/null; do sleep 1; done'
+  - php artisan migrate
+  - php artisan db:seed --class=MinimalDatabaseSeeder
+  - php artisan db:seed --class=TestDatabaseSeeder
+  - php artisan storage:link
+  - php artisan route:cache
+  - php artisan test
+  after_script:
+  - mkdir -p artifacts
+  - cp -r storage/logs artifacts/ || true
+  artifacts:
+    when: on_failure
+    paths:
+    - artifacts
+  rules:
+    - !reference [.default_rules, tests]
+  tags:
+  - selfhosted_runner
+
+build_nginx_image:
+  stage: build
+  interruptible: true
+  image:
+    name: quay.io/buildah/testing:latest
+  variables:
+    GITLAB_REGISTRY: registry.gitlab.com/xhibitsignage-v3/mvix-crm-backend
+  script:
+  - *update-helm-version-script
+  - TAG=$FULL_VER
+  - buildah login -u "gitlab-ci-token" -p "${CI_JOB_TOKEN}" ${CI_REGISTRY}
+  - |
+    for i in arm64 amd64
+    do
+      buildah bud --manifest ${GITLAB_REGISTRY}/${ENV_SUFFIX}/nginx:${TAG} --arch $i -f .Dockerfile-nginx .
+    done
+  - buildah manifest push ${GITLAB_REGISTRY}/${ENV_SUFFIX}/nginx:${TAG} docker://${GITLAB_REGISTRY}/${ENV_SUFFIX}/nginx:${TAG} --all --format v2s2
+  rules:
+    - !reference [.default_rules, top_branches]
+
+build_php_image:
+  stage: build
+  interruptible: true
+  image:
+    name: quay.io/buildah/testing:latest
+  variables:
+    GITLAB_REGISTRY: registry.gitlab.com/xhibitsignage-v3/mvix-crm-backend
+  script:
+  - *update-helm-version-script
+  - TAG=$FULL_VER
+  - buildah login -u "gitlab-ci-token" -p "${CI_JOB_TOKEN}" ${CI_REGISTRY}
+  - |
+    for i in arm64 amd64
+    do
+      buildah bud --manifest ${GITLAB_REGISTRY}/${ENV_SUFFIX}/php:${TAG} --arch $i -f .Dockerfile-php .
+    done
+  - buildah manifest push ${GITLAB_REGISTRY}/${ENV_SUFFIX}/php:${TAG} docker://${GITLAB_REGISTRY}/${ENV_SUFFIX}/php:${TAG} --all --format v2s2
+  rules:
+    - !reference [.default_rules, top_branches]
+
+deploy:
+  stage: deploy
+  interruptible: false
+  image:
+    name: opsworksco/aws-helm-kubectl:3.12.0-1.27.2
+  environment:
+    name: $ENVIRONMENT
+    url: $URL
+  script:
+  - 'STS=($(aws sts assume-role-with-web-identity --role-arn ${AWS_ROLE_ARN} --role-session-name
+    "GitLabRunner-${CI_PROJECT_ID}-${CI_PIPELINE_ID}" --web-identity-token $CI_JOB_JWT_V2
+    --duration-seconds 3600 --query ''Credentials.[AccessKeyId,SecretAccessKey,SessionToken]''
+    --output text))
+
+    '
+  - export AWS_ACCESS_KEY_ID="${STS[0]}"
+  - export AWS_SECRET_ACCESS_KEY="${STS[1]}"
+  - export AWS_SESSION_TOKEN="${STS[2]}"
+  - aws sts get-caller-identity
+  - aws eks --region ${AWS_DEFAULT_REGION} update-kubeconfig --name ${EKS_CLUSTER_NAME}
+  - *update-helm-version-script
+  - *git-tag-script
+  - helm secrets upgrade --install --timeout 10m --create-namespace --namespace crm-mvix-$ENV_SUFFIX --set default.tag=$TAG -f .k8s/mvix-crm-backend/values-$ENV_SUFFIX.yaml -f .secrets-${ENV_SUFFIX}.yaml mvix-crm-backend .k8s/mvix-crm-backend
+  rules:
+    - !reference [.default_rules, top_branches]

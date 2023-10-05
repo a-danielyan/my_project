@@ -1,0 +1,11 @@
+{{- if or (gt .Values.nginx.replicaCount 1.0) (.Values.nginx.autoscaling.enabled) }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "mvix-crm-backend-nginx.name" . }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "mvix-crm-backend-nginx.selectorLabels" . | nindent 6 }}
+{{- end }}

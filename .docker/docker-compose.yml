@@ -1,0 +1,75 @@
+version: '2.1'
+
+services:
+  nginx:
+    build:
+      context: ./builds/nginx
+      args:
+        PUID: $PUID
+        PGID: $PGID
+    volumes_from:
+      - php
+    volumes:
+      - ./data/logs/nginx:/var/log/nginx
+    ports:
+      - $NGINX_PORT:80
+    networks:
+      app_network: {}
+
+  php:
+    build:
+      context: ./builds/php
+      args:
+        PUID: $PUID
+        PGID: $PGID
+    volumes:
+      - ./..:/var/www/app
+      - ./builds/php/xdebug.ini:/usr/local/etc/php/conf.d/xdebug.ini
+    working_dir: /var/www/app
+    ports:
+      - 8081:8081
+    environment:
+      DB_DATABASE: $MYSQL_DATABASE
+      DB_USERNAME: $MYSQL_USERNAME
+      DB_PASSWORD: $MYSQL_PASSWORD
+      APP_KEY: $APP_KEY
+      JWT_SECRET: $JWT_SECRET
+      PHP_IDE_CONFIG: "serverName=Docker"
+    networks:
+      app_network: {}
+
+  mysql:
+    image: mysql:8.0.30
+    command: "--default-authentication-plugin=mysql_native_password"
+    volumes:
+      - ./data/mysql:/var/lib/mysql
+    ports:
+      - $MYSQL_HOST_PORT:3306
+    environment:
+      MYSQL_ROOT_PASSWORD: $MYSQL_ROOT_PASSWORD
+      MYSQL_DATABASE: $MYSQL_DATABASE
+      MYSQL_USERNAME: $MYSQL_USERNAME
+      MYSQL_PASSWORD: $MYSQL_PASSWORD
+    networks:
+      app_network: {}
+
+  mysql_test:
+    image: mysql:8.0.30
+    command: "--default-authentication-plugin=mysql_native_password"
+    environment:
+      MYSQL_ROOT_PASSWORD: $MYSQL_ROOT_PASSWORD
+      MYSQL_DATABASE: $MYSQL_DATABASE
+      MYSQL_USERNAME: $MYSQL_USERNAME
+      MYSQL_PASSWORD: $MYSQL_PASSWORD
+    networks:
+      app_network: {}
+
+  redis:
+    image: public.ecr.aws/docker/library/redis:7.0.5
+    ports:
+      - $REDIS_HOST_PORT:6379
+    networks:
+      app_network: {}
+
+networks:
+  app_network:

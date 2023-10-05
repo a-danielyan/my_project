@@ -1,0 +1,2 @@
+FROM docker.io/nginx:1.25.1-alpine
+COPY public /var/www/app/public

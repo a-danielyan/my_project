@@ -1,0 +1,7 @@
+#Base image is built using .docker/builds/php/Dockerfile
+FROM registry.gitlab.com/xhibitsignage-v3/xhibitsignage-v3-backend:php-8.1.21
+COPY --chmod=755 ./php-start.sh /usr/local/bin/php-start.sh
+WORKDIR /var/www/app
+COPY --chown=app:app . /var/www/app
+RUN composer update && composer install
+ENTRYPOINT ["/usr/local/bin/php-start.sh"]

@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: php-fpm
+data:
+  docker.conf: |
+    [global]
+    error_log = /proc/self/fd/2
+    log_level = error
+
+    [www]
+    listen = 0.0.0.0:{{ .Values.php.containerPort }}
+    ; if we send this to /proc/self/fd/1, it never appears
+    ; disabled access logs, we are interesting only in tracelogs and application logs
+    access.log = /proc/self/fd/2
+    access.format='{"timestamp":"%{%Y-%m-%dT%H:%M:%S%z}T","client_ip":"%{HTTP_X_FORWARDED_FOR}e","remote_ip":"%R","remote_user":"%u","request":"%m %{REQUEST_URI}e %{SERVER_PROTOCOL}e","status":"%s","body_bytes_sent":"%l","request_time":"%d","referrer":"%{HTTP_REFERER}e","user_agent":"%{HTTP_USER_AGENT}e","request_id":"%{REQUEST_ID}e","cpu_usage":"%C","memory_usage":"%M"}'
+
+    clear_env = no
+
+    ; Ensure worker stdout and stderr are sent to the main error log.
+    catch_workers_output = yes
+
+    ; this will void the warning messages on the log output
+    decorate_workers_output = no
+
+    ; We implemented scaling based on https://blog.wyrihaximus.net/2021/01/scaling-php-fpm-based-on-utilization-demand-on-kubernetes/
+    pm = static
+    pm.max_requests = 1000
+    pm.max_children = 15
+    pm.status_path = /status
+    pm.status_listen = 127.0.0.1:{{ .Values.php.statusPort }}
+
+    request_terminate_timeout = 300
+
+  memory-limit.ini: |
+    memory_limit = {{ .Values.default.PHP_MEMORY_LIMIT }}
+    upload_max_filesize = {{ .Values.default.UPLOAD_MAX_SIZE }}
+    post_max_size = {{ .Values.default.UPLOAD_MAX_SIZE }}
+    max_execution_time = {{ .Values.default.MAX_EXECUTION_TIME | int }}
+    max_input_time = -1
+    display_errors = stderr
+    expose_php = 0

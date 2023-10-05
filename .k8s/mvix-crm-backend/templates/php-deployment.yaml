@@ -1,0 +1,139 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "mvix-crm-backend-php.name" . }}
+  labels:
+    {{- include "mvix-crm-backend-php.labels" . | nindent 4 }}
+spec:
+  progressDeadlineSeconds: 600
+  {{- if not .Values.php.autoscaling.enabled }}
+  replicas: {{ .Values.php.replicaCount }}
+  {{- end }}
+  revisionHistoryLimit: 10
+  strategy:
+     {{- toYaml .Values.default.strategy | nindent 4 }}
+  selector:
+    matchLabels:
+       {{- include "mvix-crm-backend-php.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/php-fpm: {{ include (print $.Template.BasePath "/php-configmap.yaml") . | sha256sum }}
+        checksum/php-fpm-secrets: {{ include (print $.Template.BasePath "/php-secrets.yaml") . | sha256sum }}
+      labels:
+        {{- include "mvix-crm-backend-php.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.php.image.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ .Values.default.serviceAccount.name }}
+      securityContext:
+        {{- toYaml .Values.php.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ include "mvix-crm-backend-php.name" . }}
+          securityContext:
+            {{- toYaml .Values.default.securityContext | nindent 12 }}
+          image: "{{ .Values.php.image.repository }}:{{ .Values.php.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.php.image.pullPolicy }}
+          envFrom:
+          - secretRef:
+              name: {{ include "mvix-crm-backend-php.name" . }}
+          ports:
+          - name: fpm-socket
+            containerPort: {{ .Values.php.containerPort }}
+            protocol: TCP
+          - name: status
+            containerPort: {{ .Values.php.statusPort }}
+            protocol: TCP
+          startupProbe:
+            exec:
+                command:
+                    - timeout
+                    - "1"
+                    - php-fpm-healthcheck # a simple ping since this means it's ready to handle traffic
+            initialDelaySeconds: 1
+            periodSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            exec:
+                command:
+                    - timeout
+                    - "1"
+                    - php-fpm-healthcheck # a simple ping since this means it's ready to handle traffic
+                    # - --accepted-conn=5000 # fails after fpm has served more than 5k requests, this will force the pod to reset, use with caution
+            initialDelaySeconds: 1
+            periodSeconds: 5
+          readinessProbe:
+            exec:
+                command:
+                    - timeout
+                    - "1"
+                    - php-fpm-healthcheck # a simple ping since this means it's ready to handle traffic
+                    # - --listen-queue=10 # fails if there are more than 10 processes waiting in the fpm queue
+            initialDelaySeconds: 1
+            periodSeconds: 5
+          lifecycle:
+            postStart:
+              exec:
+                command: ["/bin/sh", "-c", "php artisan config:cache; php artisan migrate --force; php artisan data-inject --force"]
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 30"]
+          resources:
+            {{- toYaml .Values.php.resources | nindent 12 }}
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          volumeMounts:
+          - mountPath: /usr/local/etc/php/conf.d/memory-limit.ini
+            name: php-fpm-configmap
+            subPath: memory-limit.ini
+          - mountPath: "/usr/local/etc/php-fpm.d/zzz-docker.conf"
+            name: php-fpm-configmap
+            subPath: docker.conf
+        {{ if .Values.php.metrics.enabled }}
+        - name: php-fpm-exporter
+          image: registry.gitlab.com/xhibitsignage-v3/mvix-crm-backend/php-fpm_exporter:2.2.1
+          imagePullPolicy: {{ .Values.php.image.pullPolicy }}
+          ports:
+          - name: exporter
+            containerPort: 9253
+          env:
+            - name: PHP_FPM_SCRAPE_URI
+              value: "tcp://localhost:9000/status"
+            - name: PHP_FPM_FIX_PROCESS_COUNT
+              value: "true"
+          resources:
+            {{- toYaml .Values.php.metrics.resources | nindent 12 }}
+        {{ end }}
+      dnsPolicy: ClusterFirst
+      restartPolicy: {{ .Values.php.restartPolicy }}
+      {{- with .Values.default.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.default.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                {{- range $key,$value := (fromYaml (include "mvix-crm-backend-php.selectorLabels" . ))}}
+                - key: {{ $key }}
+                  operator: In
+                  values:
+                  - {{ $value }}
+                {{- end}}
+              topologyKey: kubernetes.io/hostname
+            weight: 100
+      {{- end }}
+      {{- with .Values.default.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+      - configMap:
+          name: php-fpm
+        name: php-fpm-configmap

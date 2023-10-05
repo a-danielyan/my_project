@@ -1,0 +1,81 @@
+FROM php:8.21.1-fpm-alpine
+
+ENV user app
+ARG PUID=1000
+ARG PGID=1000
+COPY --from=docker.io/mlocati/php-extension-installer /usr/bin/install-php-extensions /usr/bin/
+# Install composer
+COPY --from=docker.io/library/composer:2.4.4 /usr/bin/composer /usr/bin/
+ENV COMPOSER_ALLOW_SUPERUSER=1
+ENV PATH="./vendor/bin:$PATH"
+
+RUN addgroup -g $PGID $user \
+  && adduser -u $PUID -G $user -S $user \
+  && apk add --update-cache --no-cache $PHPIZE_DEPS \
+  linux-headers \
+  nodejs \
+  yarn \
+  npm \
+  mysql-client \
+  libbz2 \
+  zip \
+  jpegoptim \
+  optipng \
+  pngquant \
+  ffmpeg \
+  ghostscript \
+  fcgi \
+  ### Required for Chrome in vue part
+  nss \
+  cups-libs \
+  libxcomposite \
+  libc6-compat \
+  at-spi2-core \
+  libxkbcommon \
+  udev \
+  ttf-freefont \
+  chromium \
+  ###
+  icu-dev \
+  zlib-dev \
+  libpng-dev \
+  libjpeg-turbo-dev \
+  freetype-dev \
+  libzip-dev \
+  libxml2-dev \
+  libmcrypt-dev \
+  # # Setup locale
+  # && echo en_US.UTF-8 UTF-8 > /etc/locale.gen && locale-gen \
+  # Install and enable PECL extensions
+  && npm install puppeteer@13.5.2 \
+  && pecl install -o -f redis \
+  mailparse \
+  mcrypt \
+  && docker-php-ext-enable redis \
+  mailparse \
+  mcrypt \
+  && install-php-extensions imagick \
+  && docker-php-ext-configure intl \
+  && docker-php-ext-configure gd --with-freetype --with-jpeg \
+  && docker-php-ext-install -j$(nproc) \
+  intl \
+  mysqli \
+  pdo_mysql \
+  pcntl \
+  gd \
+  zip \
+  soap \
+  bz2 \
+  exif \
+  bcmath \
+  opcache \
+  && curl -o /usr/local/bin/php-fpm-healthcheck \
+  https://raw.githubusercontent.com/renatomefi/php-fpm-healthcheck/master/php-fpm-healthcheck \
+  && chmod +x /usr/local/bin/php-fpm-healthcheck
+
+ADD policy.xml /etc/ImageMagick-6/policy.xml
+ADD memory-limit.ini /usr/local/etc/php/conf.d/
+
+COPY php-start.sh /usr/local/bin/php-start.sh
+USER $user
+CMD ["php-fpm"]

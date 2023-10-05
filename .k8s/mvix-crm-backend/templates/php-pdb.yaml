@@ -1,0 +1,11 @@
+{{- if or (gt .Values.php.replicaCount 1.0) (.Values.php.autoscaling.enabled) }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "mvix-crm-backend-php.name" . }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "mvix-crm-backend-php.selectorLabels" . | nindent 6 }}
+{{- end }}

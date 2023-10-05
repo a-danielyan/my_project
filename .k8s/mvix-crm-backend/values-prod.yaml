@@ -1,0 +1,208 @@
+# Default values for mvix-crm-backend.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+default:
+
+  # Setting that applied to both nginx and php configs
+  UPLOAD_MAX_SIZE: 2048M
+  MAX_EXECUTION_TIME: 300
+  PHP_MEMORY_LIMIT: 512M
+
+  serviceAccount:
+    # Specifies whether a service account should be created
+    create: true
+    # Annotations to add to the service account
+    annotations: {
+      eks.amazonaws.com/role-arn: arn:aws:iam::355333341165:role/mvix-crm-backend-prod
+    }
+    # The name of the service account to use.
+    # If not set and create is true, a name is generated using the fullname template
+    name: "mvix-crm-backend"
+
+    podSecurityContext: {}
+    # fsGroup: 2000
+
+  securityContext: {}
+    # capabilities:
+    #   drop:
+    #   - ALL
+    # readOnlyRootFilesystem: true
+    # runAsNonRoot: true
+    # runAsUser: 1000
+
+  nodeSelector:
+    karpenter.sh/provisioner-name: production
+
+  tolerations:
+    - key: "provisioner/production"
+      operator: "Exists"
+      effect: "NoSchedule"
+
+  affinity: {}
+
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+    type: RollingUpdate
+
+
+### PHP ###
+
+php:
+  replicaCount: 1
+  image:
+    repository: registry.gitlab.com/xhibitsignage-v3/mvix-crm-backend/prod/php
+    imagePullSecrets:
+      - name: crm-regcred
+    pullPolicy: IfNotPresent
+    # Overrides the image tag whose default is the chart appVersion.
+    # tag: ""
+
+  nameOverride: ""
+  fullnameOverride: ""
+
+  resources:
+    # We usually recommend not to specify default resources and to leave this as a conscious
+    # choice for the user. This also increases chances charts run on environments with little
+    # resources, such as Minikube. If you do want to specify resources, uncomment the following
+    # lines, adjust them as necessary, and remove the curly braces after 'resources:'.
+    limits:
+      cpu: 400m
+      memory: 1280Mi
+    requests:
+      cpu: 200m
+      memory: 256Mi
+  
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 80
+    # targetMemoryUtilizationPercentage: 80
+  
+  containerPort: 9001
+  ## statusPort must be 9000 as it's hardcoded
+  ## in the php-fpm-healthcheck script
+  statusPort: 9000
+  restartPolicy: Always
+
+  service:
+    type: ClusterIP
+    port: 9001
+
+  metrics:
+    enabled: true
+    servicemonitor:
+      enabled: true
+    resources:
+      limits:
+        cpu: 40m
+        memory: 32Mi
+      requests:
+        cpu: 40m
+        memory: 32Mi
+
+  global:
+    env:
+      - name: PHP_MEMORY_LIMIT
+        value: "512M"
+
+
+### NGINX ###
+
+nginx:
+  replicaCount: 1
+
+  image:
+    repository: registry.gitlab.com/xhibitsignage-v3/mvix-crm-backend/prod/nginx
+    imagePullSecrets:
+      - name: crm-regcred
+    pullPolicy: Always
+    # Overrides the image tag whose default is the chart appVersion.
+    # tag: ""
+
+  nameOverride: ""
+  fullnameOverride: ""
+
+  httpPort: 8080
+  healthzPort: 10254
+  restartPolicy: Always
+
+  service:
+    type: ClusterIP
+    port: 8080
+
+  resources:
+    # We usually recommend not to specify default resources and to leave this as a conscious
+    # choice for the user. This also increases chances charts run on environments with little
+    # resources, such as Minikube. If you do want to specify resources, uncomment the following
+    # lines, adjust them as necessary, and remove the curly braces after 'resources:'.
+    limits:
+      cpu: 100m
+      memory: 32Mi
+    requests:
+      cpu: 50m
+      memory: 16Mi
+
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 80
+    # targetMemoryUtilizationPercentage: 80
+
+  global:
+    env: {}
+    MAIN_URL: "api.crm.mvix.com"
+
+  ingress:
+    enabled: true
+    className: "nginx"
+    main:
+      annotations:
+        nginx.ingress.kubernetes.io/proxy-buffer-size: 2k
+        nginx.ingress.kubernetes.io/proxy-buffers: 16 4k
+      hosts:
+        # host is defined in global.env.MAIN_URL
+        - paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: "mvix-crm-backend-nginx-service"
+                port:
+                  number: 8080
+
+### SCHEDULER ###
+scheduler:
+  # deployment name
+  name: scheduler
+  annotations: {}
+
+  restartPolicy: Always
+
+  strategy:
+    type: Recreate
+
+  command:
+    - '/sbin/tini'
+    - '--'
+  args:
+    - 'php'
+    - 'artisan'
+    - 'schedule:work'
+
+  env:
+    - name: PHP_MEMORY_LIMIT
+      value: "128M"
+
+  resources:
+    limits:
+      cpu: 600m
+      memory: 1Gi
+    requests:
+      cpu: 400m
+      memory: 192Mi
+

@@ -1,0 +1,158 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-backend
+data:
+  nginx.conf: |
+    worker_processes 1;
+    worker_rlimit_nofile 1047552;
+    worker_shutdown_timeout 30s;
+
+    error_log  /var/log/nginx/error.log notice;
+    pid        /tmp/nginx.pid;
+
+    # load_module /usr/lib/nginx/modules/ndk_http_module.so;
+    # load_module /usr/lib/nginx/modules/ngx_http_lua_module.so;
+
+    # pcre_jit on;
+
+    events {
+        multi_accept        on;
+        worker_connections  1024;
+        use                 epoll;
+    }
+
+    http {
+        proxy_temp_path /tmp/proxy_temp;
+        client_body_temp_path /tmp/client_temp;
+        fastcgi_temp_path /tmp/fastcgi_temp;
+        uwsgi_temp_path /tmp/uwsgi_temp;
+        scgi_temp_path /tmp/scgi_temp;
+
+        proxy_cache_path /tmp/nginx-cache-auth levels=1:2 keys_zone=auth_cache:10m max_size=128m inactive=30m use_temp_path=off;
+
+        include       /etc/nginx/mime.types;
+        default_type  application/octet-stream;
+
+        log_format  main  '$remote_addr - $remote_user [$time_local] "$request" '
+                          '$status $body_bytes_sent "$http_referer" '
+                          '"$http_user_agent" "$http_x_forwarded_for"';
+
+        access_log  /var/log/nginx/access.log  main;
+
+        sendfile        on;
+        #tcp_nopush     on;
+
+        keepalive_timeout  65;
+
+        #gzip  on;
+
+        include /etc/nginx/conf.d/*.conf;
+    }
+  default.conf: |
+    # log_format apm escape=json '{ "nginx_timestamp": "$time_local", "remote_ip": "$http_x_forwarded_for", "remote_user": "$remote_user", "hostname": "$host", "upstream_addr": "$upstream_addr", "request_proto": "$server_protocol", "request_method": "$request_method", "uri": "$uri", "request_params": "$args", "request": "$request_uri", "body_bytes_sent": "$body_bytes_sent", "referrer": "$http_referer", "upstream_response_time": "$upstream_response_time", "upstream_connect_time": "$upstream_connect_time", "upstream_header_time": "$upstream_header_time", "upstream_bytes_received": "$upstream_bytes_received", "request_time": "$request_time", "scheme": "$scheme", "request_id": "$http_x_request_id", "status": "$status", "upstream_status": "$upstream_status", "request_length": "$request_length", "bytes_sent": "$bytes_sent", "request_body": "$request_body", "response_body": "$response_body"}';
+    log_format apm_request_body escape=json '{ "nginx_timestamp": "$time_local", "remote_ip": "$http_x_forwarded_for", "remote_user": "$remote_user", "hostname": "$host", "upstream_addr": "$upstream_addr", "request_proto": "$server_protocol", "request_method": "$request_method", "uri": "$uri", "request_params": "$args", "request": "$request_uri", "body_bytes_sent": "$body_bytes_sent", "referrer": "$http_referer", "upstream_response_time": "$upstream_response_time", "upstream_connect_time": "$upstream_connect_time", "upstream_header_time": "$upstream_header_time", "upstream_bytes_received": "$upstream_bytes_received", "request_time": "$request_time", "scheme": "$scheme", "request_id": "$http_x_request_id", "status": "$status", "upstream_status": "$upstream_status", "request_length": "$request_length", "bytes_sent": "$bytes_sent", "request_body": "$request_body", "user_agent": "$http_user_agent", "device_id": "$http_x_deviceid", "device_type": "$http_x_devicetype", "device_version": "$http_x_deviceversion", "device_mac": "$http_x_devicemac"}';
+    log_format apm_no_request_body escape=json '{ "nginx_timestamp": "$time_local", "remote_ip": "$http_x_forwarded_for", "remote_user": "$remote_user", "hostname": "$host", "upstream_addr": "$upstream_addr", "request_proto": "$server_protocol", "request_method": "$request_method", "uri": "$uri", "request_params": "$args", "request": "$request_uri", "body_bytes_sent": "$body_bytes_sent", "referrer": "$http_referer", "upstream_response_time": "$upstream_response_time", "upstream_connect_time": "$upstream_connect_time", "upstream_header_time": "$upstream_header_time", "upstream_bytes_received": "$upstream_bytes_received", "request_time": "$request_time", "scheme": "$scheme", "request_id": "$http_x_request_id", "status": "$status", "upstream_status": "$upstream_status", "request_length": "$request_length", "bytes_sent": "$bytes_sent", "user_agent": "$http_user_agent", "device_id": "$http_x_deviceid", "device_type": "$http_x_devicetype", "device_version": "$http_x_deviceversion", "device_mac": "$http_x_devicemac"}';
+
+    server {
+        listen {{ .Values.nginx.healthzPort }};
+        server_name _;
+
+        location /healthz {
+            access_log off;
+            #FIX ME. Not sure if it's right approach to check nginx status
+            return 200;
+        }
+    }
+
+    server {
+        listen {{ .Values.nginx.httpPort }};
+        server_name _;
+        root /var/www/app/public;
+        index index.html index.htm index.php;
+
+        charset utf-8;
+        client_max_body_size {{ .Values.default.UPLOAD_MAX_SIZE }};
+
+        access_log /var/log/nginx/access.log apm_no_request_body;
+        #We will have error logs in php-fpm containers
+        error_log /dev/null emerg;
+        proxy_connect_timeout {{ .Values.default.MAX_EXECUTION_TIME }}s;
+        proxy_send_timeout {{ .Values.default.MAX_EXECUTION_TIME }}s;
+        proxy_read_timeout {{ .Values.default.MAX_EXECUTION_TIME }}s;
+        send_timeout {{ .Values.default.MAX_EXECUTION_TIME }}s;
+
+        set $rid $request_id;
+        if ($http_x_request_id != '') {
+        set $rid $http_x_request_id;
+        }
+        add_header X-Request-Id $rid;
+
+        # lua_need_request_body on;
+
+        # set $response_body "";
+        # body_filter_by_lua '
+        #     local response_body = string.sub(ngx.arg[1], 1, 1000)
+        #     ngx.ctx.buffered = (ngx.ctx.buffered or "") .. response_body
+        #     if ngx.arg[2] then
+        #         ngx.var.response_body = ngx.ctx.buffered
+        #     end
+        # ';
+
+        location ~ /\. {
+            deny all;
+            return 404;
+        }
+        location = /favicon.ico {
+            access_log off;
+            log_not_found off;
+        }
+        location = /robots.txt {
+            access_log off;
+            log_not_found off;
+        }
+        location ~ /\.(git|txt|md|ht)$ {
+            deny all;
+            return 404;
+        }
+        location ~ [^/]\.php(/|$) {
+            fastcgi_split_path_info ^(.+?\.php)(/.*)$;
+            if (!-f $document_root$fastcgi_script_name) {
+                return 404;
+            }
+            # Mitigate https://httpoxy.org/ vulnerabilities
+            # test comment
+            fastcgi_param HTTP_PROXY "";
+
+            fastcgi_pass mvix-crm-backend-php:{{ .Values.php.containerPort }};
+            fastcgi_index index.php;
+            include fastcgi_params;
+            fastcgi_request_buffering off; # Disable request buffering
+            fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+            fastcgi_param PATH_INFO $fastcgi_path_info;
+            fastcgi_param PATH_TRANSLATED $document_root$fastcgi_path_info;
+            fastcgi_param HTTPS on;
+            fastcgi_param REQUEST_ID $http_x_request_id;
+            fastcgi_connect_timeout {{ .Values.default.MAX_EXECUTION_TIME }}s;
+            fastcgi_read_timeout {{ .Values.default.MAX_EXECUTION_TIME }}s;
+            fastcgi_send_timeout {{ .Values.default.MAX_EXECUTION_TIME }}s;
+            fastcgi_buffers         16  16k;
+            fastcgi_buffer_size         32k;
+        }
+
+        location ~ ^/(storage|tus)/ {
+            proxy_force_ranges on;
+            slice 1m;
+            proxy_set_header Range $slice_range;
+            proxy_cache_max_range_offset 1024;
+            try_files $uri $uri/;
+        }
+
+        location / {
+            try_files $uri $uri/ /index.php?$query_string;
+            add_header 'Access-Control-Allow-Origin' '*' always;
+            add_header 'Access-Control-Allow-Methods' 'POST, GET, PUT, DELETE, OPTIONS, PATCH' always;
+            add_header 'Access-Control-Allow-Headers' 'Authorization, Content-Type, Accept' always;
+            add_header 'Access-Control-Allow-Credentials' 'true' always;
+        }
+    }

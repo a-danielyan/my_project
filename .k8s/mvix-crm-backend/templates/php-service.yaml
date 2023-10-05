@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "mvix-crm-backend-php.name" . }}
+  labels:
+    {{- include "mvix-crm-backend-php.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.php.service.type }}
+  ports:
+    - port: {{ .Values.php.service.port }}
+      targetPort: {{ .Values.php.service.port }}
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "mvix-crm-backend-php.selectorLabels" . | nindent 4 }}

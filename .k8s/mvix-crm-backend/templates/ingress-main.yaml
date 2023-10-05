@@ -1,0 +1,58 @@
+{{- if .Values.nginx.ingress.enabled -}}
+{{- $fullName := include "mvix-crm-backend-nginx.fullname" . -}}
+{{- $svcPort := .Values.nginx.service.port -}}
+{{- if and .Values.nginx.ingress.className (not (semverCompare ">=1.18-0" .Capabilities.KubeVersion.GitVersion)) }}
+  {{- if not (hasKey .Values.nginx.ingress.main.annotations "kubernetes.io/ingress.class") }}
+  {{- $_ := set .Values.nginx.ingress.main.annotations "kubernetes.io/ingress.class" .Values.ingress.className}}
+  {{- end }}
+{{- end }}
+{{- if semverCompare ">=1.19-0" .Capabilities.KubeVersion.GitVersion -}}
+apiVersion: networking.k8s.io/v1
+{{- else if semverCompare ">=1.14-0" .Capabilities.KubeVersion.GitVersion -}}
+apiVersion: networking.k8s.io/v1beta1
+{{- else -}}
+apiVersion: extensions/v1beta1
+{{- end }}
+kind: Ingress
+metadata:
+  name: {{ $fullName }}
+  labels:
+    {{- include "mvix-crm-backend-nginx.labels" . | nindent 4 }}
+  {{- if .Values.nginx.ingress.main.annotations }}
+  annotations:
+  {{- else if .Values.nginx.global.CORS -}}
+  annotations:
+  {{- end }}
+  {{- with .Values.nginx.ingress.main.annotations }}
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.nginx.global.CORS }}
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if and .Values.nginx.ingress.className (semverCompare ">=1.18-0" .Capabilities.KubeVersion.GitVersion) }}
+  ingressClassName: {{ .Values.nginx.ingress.className }}
+  {{- end }}
+  rules:
+    {{- range .Values.nginx.ingress.main.hosts }}
+    - host: {{ $.Values.nginx.global.MAIN_URL | quote }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ .path }}
+            {{- if and .pathType (semverCompare ">=1.18-0" $.Capabilities.KubeVersion.GitVersion) }}
+            pathType: {{ .pathType }}
+            {{- end }}
+            backend:
+              {{- if semverCompare ">=1.19-0" $.Capabilities.KubeVersion.GitVersion }}
+              service:
+                name: {{ $fullName }}
+                port:
+                  number: {{ $svcPort }}
+              {{- else }}
+              serviceName: {{ $fullName }}
+              servicePort: {{ $svcPort }}
+              {{- end }}
+          {{- end }}
+    {{- end }}
+{{- end }}

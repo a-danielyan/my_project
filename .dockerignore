@@ -1,0 +1,8 @@
+**/.git*
+**/.k8s
+**/.docker
+**/.Dockerfile*
+**/.env*
+**/.secrets*
+**/.sops.yaml
+README.md
